@@ -21,7 +21,7 @@ if ocr_mode != "网络" and len(ocr_mode) != 0:
     sdk = muggle_ocr.SDK(model_type=muggle_ocr.ModelType.OCR)
 
 config = {
-    'appId': 'PCR',
+    'appId': "23726563",
     'apiKey': baidu_apiKey,
     'secretKey': baidu_secretKey
 }

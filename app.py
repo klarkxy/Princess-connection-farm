@@ -25,7 +25,7 @@ def create_app():
     CORS(app, supports_credentials=True)
 
     @app.route('/', defaults={'path': ''})
-    @app.route('/<reg("((?!(api|apidocs)).)+"):path>')  # 暂 api|apidoc 以外的所有路由视为前端路由
+    @app.route('/<reg("((?!(api|apidocs|ocr)).)+"):path>')  # 暂 api|apidoc 以外的所有路由视为前端路由
     def index(path):
         return render_template("index.html")
 
@@ -44,7 +44,6 @@ def create_app():
 
 if __name__ == '__main__':
     from argparse import ArgumentParser
-
     parser = ArgumentParser()
     parser.add_argument('-p', '--port', default=5000, type=int, help='port to listen on')
     parser.add_argument('-d', '--debug', default=True, type=bool)

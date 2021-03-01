@@ -262,17 +262,17 @@ class UIMatcher:
             x = x1 + max_loc[0] + tw // 2
             y = y1 + max_loc[1] + th // 2
             if debug:
-                print("{}--{}--({},{})".format(template_path, round(max_val, 3), x, y))
+                # print("{}--{}--({},{})".format(template_path, round(max_val, 3), x, y))
                 pcr_log('admin').write_log(level='debug',
                                            message="{}--{}--({},{})".format(template_path, round(max_val, 3)
                                                                             , x, y))
                 pass
                 if at is None:
                     pass
-                    print("{}  at=({}, {}, {}, {})".format(template_path, x1 + max_loc[0],
-                                                           y1 + max_loc[1],
-                                                           x1 + max_loc[0] + tw,
-                                                           y1 + max_loc[1] + th))
+                    # print("{}  at=({}, {}, {}, {})".format(template_path, x1 + max_loc[0],
+                    #                                        y1 + max_loc[1],
+                    #                                        x1 + max_loc[0] + tw,
+                    #                                        y1 + max_loc[1] + th))
                     pcr_log('admin').write_log(level='debug',
                                                message="{}  at=({}, {}, {}, {})".format(template_path, x1 + max_loc[0],
                                                                                         y1 + max_loc[1],

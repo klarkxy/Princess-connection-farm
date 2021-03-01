@@ -31,3 +31,6 @@ config.ini
 
 # 自定义脚本
 /customtask
+/outputs
+bind_schedule.json
+.gitignore
