@@ -1,6 +1,6 @@
  <img src="webclient/src/assets/logo.jpg" width = "80" height = "80" alt="LOGO" align=center />
 
- # Princess connection 公主连结农场脚本v2.5.20210302
+ # Princess connection 公主连结农场脚本v2.5.20210303
 
 ![](https://img.shields.io/badge/license-GPL--3.0-blue)![](https://img.shields.io/badge/opencv-2.0-blue)![](https://img.shields.io/badge/UIAutomator-2-blue)
 
@@ -78,6 +78,8 @@
 ## :globe_with_meridians:环境
 
 - 需要 Python **64位**版本>=3.6（安装时记得把带有**PATH**字母选项的勾上）**不要3.9！！！**
+
+- OCR 需求 `VS C++ Build Tool`
 
 - 先cd进项目目录下
 
@@ -171,6 +173,11 @@ Tips:QQPush机器人经常换号 Wechat在4月底将全部弃用，转Wework
 
 ## :hammer:更新历史:wrench:
 
+2021/3/3 By;TheAutumnOfRice
+
+- 增加更多调试句柄
+- 修复进入Hard图的问题
+
 2021/3/2 By:Klarkxy
 
 - 编辑界面增加友好提示，方便编辑时使用。
@@ -189,6 +196,7 @@ Tips:QQPush机器人经常换号 Wechat在4月底将全部弃用，转Wework
   - 单独开关指定debug `debug`
   - 记录Automator和u2的操作信息 `rec`/`u2rec`
   - 支持命令调试 `exec`
+- 增加Bot的代理设置 （proxy_http,proxy_https)
 
 2021/3/1 By:TheAutumnOfRice
 
