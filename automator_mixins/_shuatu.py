@@ -1,12 +1,16 @@
 import os
 import time
+from math import floor
 
 from core.MoveRecord import movevar
 from core.constant import HARD_COORD, NORMAL_COORD, FIGHT_BTN, MAOXIAN_BTN, MAX_MAP, ACTIVITY_COORD
 from core.constant import USER_DEFAULT_DICT as UDD
 from core.cv import UIMatcher
 from core.log_handler import pcr_log
+from core.pcr_checker import PCRRetry, LockTimeoutError, RetryNow, ContinueNow
 from core.valid_task import ShuatuToTuple
+from pcrdata.pcrdata import PCRData
+from scenes.fight.fightinfo_zhuxian import FightInfoZhuXian
 from ._shuatu_base import ShuatuBaseMixin
 
 
@@ -805,31 +809,49 @@ class ShuatuMixin(ShuatuBaseMixin):
         self.log.write_log("info", f"全部刷图任务已经完成。")
         self.lock_home()
 
-    def shuatu_daily_new(self, tu_order: list, daily_tili=0, xianding=False, do_tuitu=False, var={}):
+    def shuatu_daily_ocr(self,
+                         tu_order: list,
+                         daily_tili=0,
+                         xianding=False,
+                         not_three_star_action="do",
+                         zero_star_action="exit",
+                         lose_action="skip",
+                         can_not_enter_action="exit",
+                         win_without_threestar_is_lose=True,
+                         team_order="zhanli",
+                         var={}):
         """
-        每日刷图（使用扫荡券）。每天重置一次刷图记录。
-        气死我了，本来想做通用刷图的，可全是BUG，现在看来只能刷H本了。
-            —— TheAutumnOfRice
-        !!注:为了记录刷图次数，由于暂未使用OCR，
-            刷图通过”一个一个刷“来确保计数准确。
-            所以暂时不适合用于小号的刷图（还请用shuatuXX）
-            该函数最适合大号推H图。
+        OCR 刷图！！超快！！
         :param tu_order: 刷图顺序表。
             tu_order为一个list，对每一个元素：
                 "A-B-T"表示刷普通图A-B共T次
                 "HA-B-T"表示刷困难图A-B共T次
             Example:
                 tu_order=["3-4-10","H1-1-3"]
-            注意：困难图如果刷超过3次，会自动购买次数。
+            注意：困难图如果刷超过3次，并不会自动购买次数。
             该刷图列表表示的刷图顺序为录入顺序。
         :param daily_tili: 每日买体力次数。
         :param xianding: 是否买空限定商店（如果出现的话）
-        :param do_tuitu: 不能扫荡时，是否手刷
+        :param not_three_star_action: 遇到未满三星图如何操作
+        :param zero_star_action: 遇到零星图如何操作
+        :param lose_action: 推图失败如何操作
+        :param can_not_enter_action: 无法进图时如何操作（不适用do）
+            - action的种类
+                "do" 手刷
+                "exit" 终止刷图
+                "skip" 跳过该图
+        :param win_without_threestar_is_lose: 如果没有三星过关就算输
+        :param team_order:
+            使用队伍 "A-B" 形式，表示编组A选择B。
+            若为 order指令：则按以下order排序后取前5.
+                - "zhanli" 按战力排序
+                - "dengji" 按等级排序
+                - "xingshu" 按星数排序
+            若为"none"：不换人
         """
         # 每日更新
         from core.utils import diffday
         ds = self.AR.get("daily_status", UDD["daily_status"])
-
         def new_day(ds):
             t1 = time.time()
             t2 = ds["last_time"]
@@ -880,7 +902,7 @@ class ShuatuMixin(ShuatuBaseMixin):
 
         new_day(ds)
         cur = parse_tu(ds)
-        var.setdefault("cur_tili", 0)
+        ds.setdefault("buy_tili", 0)
         if len(cur) == 0:
             self.log.write_log("info", "今天的刷图任务已经全部完成啦。")
             return
@@ -891,89 +913,311 @@ class ShuatuMixin(ShuatuBaseMixin):
             buy_tili = 0
         if not self.check_shuatu():
             return
-        self.lock_home()
-        self.enter_zhuxian()
+
+        S = self.get_zhuye()
+        S = S.goto_maoxian()
         last_a = -1
         last_m = None
         for ind, (m, a, b, t) in enumerate(cur):
+            mode = "hard" if m == "H" else "normal"
             x, y, _, d = GetXYTD(m, a, b)
+            # m: mode (H,N)
+            # a,b: a-b
+            # t: **剩余** 要刷几次
+            # x,y：坐标
+            # d：拖动状态
+            # Enter
             if m != last_m or a != last_a:
                 if m == "N":
-                    self.select_normal_id(a)
+                    S = S.goto_normal()
+                    res = S.select_normal_id(a)
                 else:
-                    self.select_hard_id(a)
-
-            now_time = 0
-            retry_cnt = 0
-            while now_time < t:
-                last_tili = var["cur_tili"]
-                self._zdzb_info = ""
-                FS = self.GetFightSteps()
-                FS.EnterMap(x, y, drag=d)
-                FS.ShowInfo()
-                s = self.zhandouzuobiao(x, y, 1, d, use_saodang=True, buy_tili=buy_tili, buy_cishu=0, xianding=xianding,
-                                        var=var)
-                if s == -2 and self._zdzb_info == "nosaodang" and do_tuitu:
-                    # 无扫荡，进推图
-                    self._zdzb_info = ""
-                    s = self.zhandouzuobiao(x, y, 1, d, use_saodang="auto", buy_tili=buy_tili, buy_cishu=0,
-                                            xianding=xianding,
-                                            end_mode=1, juqing_in_fight=True, var=var)
-                    # 坐标重新确认
-                    if m == "N":
-                        self.select_normal_id(a)
-                    else:
-                        self.select_hard_id(a)
-                new_tili = var["cur_tili"]
-                if new_tili > last_tili:
-                    # 之前的战斗中购买了体力
-                    ds["buy_tili"] += last_tili - new_tili
-                    self.AR.set("daily_status", ds)
-                if s < 0 and self._zdzb_info == "notili":
-                    # 扫荡失败了，结束吧。
-                    self.log.write_log("info", f"体力不足，刷图终止，队列中还有{len(cur) - ind}个任务待完成。")
-                    self.lock_home()
-                    return
-                elif s < 0 and self._zdzb_info == "nosaodang":
-                    self.log.write_log("info", "无法扫荡，刷图终止。")
-                    self.lock_home()
-                    return
-                elif s == -3:
-                    if retry_cnt == 0:
-                        self.log.write_log("error", f"无法进入刷图，刷图终止")
+                    S = S.goto_hard()
+                    res = S.select_hard_id(a)
+                if not res:
+                    if can_not_enter_action == "exit":
+                        self.log.write_log("info", f"无法进入图{m}{a}-{b}！结束刷图。")
                         self.lock_home()
                         return
-                    retry_cnt += 1
-                    self.lock_home()
-                    self.enter_zhuxian()
-                    continue
-                elif s > 0 or self._zdzb_info == "nocishu":
-                    # 扫荡成功，记录一下~
-                    if s == 1:
-                        now_time += 1
-                    else:
-                        now_time += t
-                    if m == "N":
-                        if s == 1:
-                            ds["normal"][f"{a}-{b}"] += 1
+                    elif can_not_enter_action == "skip":
+                        self.log.write_log("info", f"无法进入图{m}{a}-{b}！跳过该图。")
+                        continue
+
+            if d == "left":
+                S.Drag_Left()
+            elif d == "right":
+                S.Drag_Right()
+
+            @PCRRetry(name="DOIT")
+            def DOIT():
+                nonlocal t
+                if t == 0:
+                    return "continue"
+                M: FightInfoZhuXian = S.click_xy_and_open_fightinfo(x, y)
+                if M is None:
+                    if can_not_enter_action == "exit":
+                        self.log.write_log("info", f"无法进入图{m}{a}-{b}！结束刷图。")
+                        self.lock_home()
+                        return "return"
+                    elif can_not_enter_action == "skip":
+                        self.log.write_log("info", f"无法进入图{m}{a}-{b}！跳过该图。")
+                        return "continue"
+                S.clear_initFC()
+                sc = self.getscreen()
+                stars = M.get_upperright_stars(sc)
+                if stars == 3:
+                    # 可以扫荡
+                    # 次数判断：对Hard图
+                    max_cishu = t  # 目标：刷t次
+                    if m == "H":
+                        cishu = M.get_cishu(sc)
+                        if cishu == 0:
+                            # 不能扫荡，没有次数
+                            ds["hard"][f"{a}-{b}"] = 3
+                            new_day(ds)
+                            for _ in range(6):
+                                self.click(1,1)
+                            self.log.write_log("info", f"{m}{a}-{b}已经不能再刷更多了！")
+                            return "continue"
+                    self._zdzb_info = ""  # 记录失败原因
+                    # 扫荡券判断：最多还能扫荡几次
+                    quan = M.get_saodangquan(sc)
+                    if quan<max_cishu:
+                        self._zdzb_info = "noquan"
+                        if quan==0:
+                            self.log.write_log("warning", "已经没有扫荡券了！终止刷图。")
+                            self.lock_home()
+                            return "return"
+                        self.log.write_log("warning",f"扫荡券不足，只能支持刷{quan}次了。")
+                        max_cishu=quan
+
+                    # 体力判断：最多还能进行几次
+                    left_tili = M.get_tili_left(sc)
+                    one_tili = PCRData().get_map_tili(mode, a, b)
+                    max_cishu_tili = floor(left_tili / one_tili)
+                    bought_tili = False
+                    while max_cishu_tili < max_cishu:
+                        # 体力不足：可以选择买体力倒是。
+                        if ds["buy_tili"] < buy_tili:
+                            # 可以！买体力！
+                            for _ in range(6):
+                                self.click(1, 1)
+                            bought_tili = True
+                            S.goto_buytili().OK().OK()
+                            ds["buy_tili"] += 1
+                            new_day(ds)
+                            self.log.write_log("info", f"体力不足，购买体力{ds['buy_tili']}/{buy_tili}")
+                            left_tili += 120
+                            max_cishu_tili = floor(left_tili / one_tili)
                         else:
-                            ds["normal"][f"{a}-{b}"] += t
-                    else:
-                        if s == 1:
-                            ds["hard"][f"{a}-{b}"] += 1
-                        else:
-                            ds["hard"][f"{a}-{b}"] += t
-                    self.AR.set("daily_status", ds)
+                            # 已经……买不动了
+                            if buy_tili>0:
+                                self.log.write_log("info", f"已经消耗完全部的买体力次数了。")
+                            self._zdzb_info = "notili"
+                            if max_cishu_tili == 0:
+                                self.log.write_log("info", "已经一点体力都不剩了！终止刷图。")
+                                self.stop_shuatu()
+                                self.lock_home()
+                                return "return"
+                            else:
+                                self.log.write_log("info", f"剩下的体力只够刷{max_cishu_tili}次了！")
+                            break
+                    if bought_tili:
+                        # 买过体力之后要重新进图
+                        S.click_xy_and_open_fightinfo(x, y)
+                    max_cishu = min(max_cishu, max_cishu_tili)
+                    # 扫荡
+                    true_cishu = max_cishu
+                    M.set_saodang_cishu(true_cishu, one_tili=one_tili, left_tili=left_tili,sc=self.last_screen)
+                    SD = M.goto_saodang()  # 扫荡确认
+                    SD = SD.OK()  # 扫荡结果
+                    # 记录
+                    ds[mode][f"{a}-{b}"] += true_cishu
                     new_day(ds)
-                elif self._zdzb_info == "noquan":
-                    self.log.write_log("info", f"券不足，刷图终止，队列中还有{len(cur) - ind}个任务待完成。")
-                    self.lock_home()
-                    return
+                    MsgList = SD.OK()  # 扫荡后的一系列MsgBox
+                    while True:
+                        out = MsgList.check()
+                        if out is None:  # 无msgbox
+                            break
+                        if isinstance(out, MsgList.XianDingShangDianBox):
+                            # 限定商店
+                            if xianding:
+                                shop = out.Go()
+                                shop.buy_all()
+                                shop.back()
+                                break
+                            else:
+                                out.Cancel()
+                        if isinstance(out,MsgList.TuanDuiZhanBox):
+                            out.OK()
+                        if isinstance(out,MsgList.LevelUpBox):
+                            out.OK()
+                            self.start_shuatu()  # 体力又有了！
+                        if isinstance(out,MsgList.ChaoChuShangXianBox):
+                            out.OK()
+                    # 扫荡结束
+                    # 保险起见
+                    for _ in range(6):
+                        self.click(1,1)
+                    if true_cishu<t:
+                        self.log.write_log("info", f"{m}{a}-{b}刷图剩余次数：{t - true_cishu}")
+                        t -= true_cishu
+                        raise ContinueNow("DOIT")
+                    else:
+                        self.log.write_log("info", f"{m}{a}-{b}刷图成功！")
                 else:
-                    self.log.write_log("info", "战斗失败，刷图终止。")
-                    self.lock_home()
-                    return
-            self.log.write_log("info", f"{a}-{b}刷图成功！")
+                    # 特判
+                    if stars==0:
+                        if zero_star_action == "exit":
+                            self.log.write_log("info",f"{m}{a}-{b}尚未通关，终止刷图！")
+                            self.lock_home()
+                            return "return"
+                        elif zero_star_action == "skip":
+                            self.log.write_log("info", f"{m}{a}-{b}尚未通关，跳过刷图！")
+                            for _ in range(6):
+                                self.click(1,1)
+                            return "continue"
+                    if stars<3:
+                        if not_three_star_action == "exit":
+                            self.log.write_log("info", f"{m}{a}-{b}尚未三星，终止刷图！")
+                            self.lock_home()
+                            return "return"
+                        elif not_three_star_action == "skip":
+                            self.log.write_log("info", f"{m}{a}-{b}尚未三星，跳过刷图！")
+                            for _ in range(6):
+                                self.click(1,1)
+                            return "continue"
+                    # 次数判断：对Hard图
+                    if m == "H":
+                        cishu = M.get_cishu(sc)
+                        if cishu == 0:
+                            # 不能扫荡，没有次数
+                            ds["hard"][f"{a}-{b}"] = 3
+                            new_day(ds)
+                            for _ in range(6):
+                                self.click(1, 1)
+                            self.log.write_log("info", f"{m}{a}-{b}已经不能再刷更多了！")
+                            return "continue"
+                    # 体力判断：至少得有一次体力，否则就买
+                    left_tili = M.get_tili_left(sc)
+                    one_tili = PCRData().get_map_tili(mode, a, b)
+                    bought_tili = False
+                    if left_tili<one_tili:
+                        # 体力不足：可以选择买体力倒是。
+                        if ds["buy_tili"] < buy_tili:
+                            # 可以！买体力！
+                            for _ in range(6):
+                                self.click(1, 1)
+                            bought_tili = True
+                            S.goto_buytili().OK().OK()
+                            ds["buy_tili"] += 1
+                            new_day(ds)
+                            self.log.write_log("info", f"体力不足，购买体力{ds['buy_tili']}/{buy_tili}")
+                        else:
+                            # 已经……买不动了
+                            self.log.write_log("info", "已经一点体力都不剩了！终止刷图。")
+                            self.stop_shuatu()
+                            self.lock_home()
+                            return "return"
+                    if bought_tili:
+                        # 买过体力之后要重新进图
+                        S.click_xy_and_open_fightinfo(x, y)
+                    # 体力次数都够了，进入挑战
+                    TZ = M.goto_tiaozhan()
+                    TZ.select_team(team_order)
+                    F = TZ.goto_fight()
+                    During = F.get_during()
+                    F.set_auto(1, self.last_screen)
+                    F.set_speed(1, self.last_screen)
+                    state = {"flag": None}
+                    last_time = time.time()
+                    while True:
+                        if time.time() - last_time > 300:
+                            # TOO LONG
+                            raise LockTimeoutError("战斗超时！")
+                        out = During.check()
+                        if out is None:
+                            continue
+                        if isinstance(out, During.LoveUpScene):
+                            out.skip()
+                        if isinstance(out, During.FightingLoseZhuXian):
+                            state["flag"] = "lose"
+                            out.goto_zhuxian(type(S))
+                            break
+                        if isinstance(out, During.FightingWinZhuXian):
+                            state["flag"] = "win"
+                            state["star"] = out.get_star()
+                            state["next"] = out.get_after()
+                            out.next()
+                            break
+                        if isinstance(out, During.FightingDialog):
+                            out.skip()
+                    if state["flag"] == "win":
+                        # 记录
+                        ds[mode][f"{a}-{b}"] += 1
+                        new_day(ds)
+                    if state["flag"] == "win" and state["star"] < 3 and win_without_threestar_is_lose:
+                        self.log.write_log("info", f"没有三星通关（{state['star']}/3），算作失败！")
+                        state["flag"] = "lose"
+                    if state["flag"] == "lose":
+                        if lose_action == "exit":
+                            self.log.write_log("info", f"战败于{m}{a}-{b}，结束刷图！")
+                            self.lock_home()
+                            return "return"
+                        elif lose_action == "skip":
+                            self.log.write_log("info", f"战败于{m}{a}-{b}，跳过该图！")
+                            return "continue"
+                        else:
+                            self.log.write_log("info", f"战败于{m}{a}-{b}，重试该图！")
+                            raise RetryNow("DOIT")
+                    else:
+                        # 战胜了！
+                        self.log.write_log("info", f"战胜了{m}{a}-{b} ({state['star']}/3)！")
+                        last_time = time.time()
+                        next = state["next"]
+                        while True:
+                            if time.time() - last_time > 120:
+                                raise LockTimeoutError("在结算页面超时！")
+                            out = next.check()
+                            if out is None and state["can_exit"]:
+                                break
+                            if isinstance(out, next.XianDingShangDianBox):
+                                # 限定商店
+                                if xianding:
+                                    shop = out.Go()
+                                    shop.buy_all()
+                                    shop.back()
+                                    break
+                                else:
+                                    out.Cancel()
+                            if isinstance(out, next.TuanDuiZhanBox):
+                                out.OK()
+                            if isinstance(out, next.LevelUpBox):
+                                out.OK()
+                                self.start_shuatu()  # 体力又有了！
+                            if isinstance(out, next.ChaoChuShangXianBox):
+                                out.OK()
+                            if isinstance(out, next.AfterFightKKR):
+                                out.skip()
+                                # 再次进图
+                                self.get_zhuye().goto_maoxian().goto_zhuxian()
+                                break
+                            if isinstance(out, next.FightingWinZhuXian2):
+                                # 外出后可能还有Box，需要小心谨慎
+                                out.next()
+                        # 开init
+                        S.set_initFC()
+
+                        # 手刷结束
+                        t -= 1
+                    raise ContinueNow("DOIT")  # 把t次刷完
+
+            cmd = DOIT()
+            if cmd == "continue":
+                continue
+            elif cmd == "return":
+                return
+
         self.log.write_log("info", f"全部刷图任务已经完成。")
         self.lock_home()
 
@@ -991,6 +1235,29 @@ class ShuatuMixin(ShuatuBaseMixin):
             lst += [f"H{A}-{B}-3"]
         self.shuatu_daily(lst, daily_tili, xianding, do_tuitu, var=var)
 
+    def meiriHtu_ocr(self, H_list, daily_tili, xianding, do_tuitu, var={}):
+        """
+        每日H本OCR!!!。
+        注：使用队伍为上一次的队伍。
+        H_list：list["A-B"],刷什么H图
+        daily_tili：购买体力次数
+        xianding：是否买空限定商店
+        do_tuitu 是否允许推图
+        """
+        lst = []
+        for s in H_list:
+            A, B = tuple(s.split("-"))
+            lst += [f"H{A}-{B}-3"]
+        self.shuatu_daily_ocr(lst,
+                              daily_tili,
+                              xianding=xianding,
+                              not_three_star_action="do" if do_tuitu else "skip",
+                              zero_star_action="do" if do_tuitu else "exit",
+                              lose_action="exit",
+                              win_without_threestar_is_lose=False,
+                              team_order="none",
+                              var=var)
+
     def xiaohaoHtu(self, daily_tili, do_tuitu, var={}):
         """
         小号每日打H本。
@@ -1003,6 +1270,20 @@ class ShuatuMixin(ShuatuBaseMixin):
             for j in [1, 2, 3]:
                 L += [f"{i + 1}-{j}"]
         self.meiriHtu(L, daily_tili, False, do_tuitu, var)
+
+    def xiaohaoHtu_ocr(self, daily_tili, xianding, do_tuitu, var={}):
+        """
+        小号每日打H本OCR。
+        一个接一个打。
+        :param daily_tili:购买体力次数
+        :aram xianding: 是否买空限定商店
+        :param do_tuitu: 是否允许推图
+        """
+        L = []
+        for i in range(MAX_MAP):
+            for j in [1, 2, 3]:
+                L += [f"{i + 1}-{j}"]
+        self.meiriHtu_ocr(L, daily_tili, xianding, do_tuitu, var)
 
     def shengjijuese(self, buy_tili=0, do_rank=True, do_shuatu=True):
         self.lock_home()
